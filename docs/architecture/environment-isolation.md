@@ -1,12 +1,12 @@
-# Environment Isolation
+# Environment Isolation Architecture
 
 ## Overview
 
-Financial systems require strict separation between testing and production environments.
+EBINUM separates test and live payment execution at the API, domain,
+gateway, and data-access boundaries.
 
-A mistake in environment handling can lead to unintended financial operations, incorrect reporting, or regulatory issues.
-
-EBINUM treats environment isolation as a first-class architectural concern.
+The environment is not treated as a UI-only setting. It becomes part of
+the request path and financial domain state.
 
 ---
 
@@ -21,86 +21,198 @@ Environment isolation aims to:
 
 ---
 
-# Environment Model
+## Request Path
 
-The platform maintains two primary execution environments.
+A request enters through an environment-specific route.
 
-## Test Environment
+Example:
 
-Used for:
+```text
+/v1/test/plan
+```
 
-- development
-- experimentation
-- integration testing
-- simulation
+The environment middleware resolves the path environment and exposes it
+through:
 
-No real financial operations occur.
+```text
+req.pathEnvironment
+```
 
----
+The controller then maps the path value to the internal enum:
 
-## Live Environment
-
-Used for:
-
-- production traffic
-- merchant operations
-- settlement workflows
-- customer-facing services
+```text
+test → Environment.TEST
+live → Environment.LIVE
+```
 
 ---
 
-# Isolation Boundaries
+## Subscription Plan Isolation
 
-## API Layer
+Subscription plans contain an environment.
 
-API keys are environment-specific.
+A plan lookup therefore requires:
 
-A test key cannot access live resources.
+```text
+planId
++
+environment
+```
 
----
+A plan created in TEST cannot be retrieved through the LIVE environment.
 
-## Routing Layer
+The service explicitly validates:
 
-Requests are routed only within their assigned environment.
+```text
+planLocator.environment === environment
+```
 
-Cross-environment execution is prohibited.
-
----
-
-## Data Layer
-
-Test and live data remain physically separated.
-
-Objectives:
-
-- prevent contamination
-- improve operational safety
-- simplify auditing
+before returning the plan.
 
 ---
 
-## Policy Layer
+## Payment Environment
 
-Different operational rules may apply across environments.
+The frontend also validates the route environment:
 
-Examples:
+```text
+test
+live
+```
 
-- transaction limits
-- onboarding requirements
-- compliance controls
+The subscription checkout hook converts the validated value into the
+internal `Environment` type and sets the API client environment.
+
+```text
+URL
+ │
+ ├── env
+ │
+ ▼
+isEnvironment()
+ │
+ ▼
+Environment
+ │
+ ▼
+api.setEnvironmentDirect()
+```
+
+The React Query key includes the environment:
+
+```text
+["subscription-plan", planId, environment]
+```
+
+This prevents test and live plan data from sharing the same query
+identity.
 
 ---
 
-# Potential Failure Modes
+## Gateway Isolation
 
-Examples include:
+Test refunds use:
 
-- environment misconfiguration
-- key leakage
-- route confusion
-- deployment mistakes
+```text
+SimulatedRefundGateway
+```
 
-Architectural controls are designed to reduce the likelihood and impact of these failures.
+Live refunds use:
+
+```text
+StripeRefundGateway
+```
+
+Therefore:
+
+```text
+TEST
+ │
+ ▼
+Simulation
+ │
+ ▼
+No real money movement
+
+LIVE
+ │
+ ▼
+Stripe
+ │
+ ▼
+Real financial operation
+```
+
+This is an important safety boundary.
+
+---
+
+## Data Isolation
+
+Subscription queries include the environment in their database filters.
+
+For example:
+
+```text
+merchantId
+environment
+status
+```
+
+are used when retrieving active plans.
+
+The same plan ID is therefore not sufficient to cross environments.
+
+---
+
+## Safety Properties
+
+Environment isolation provides several protections.
+
+### No accidental live processing from test checkout
+
+The environment determines which gateway behavior is used.
+
+### No cross-environment plan retrieval
+
+Plan lookups require matching environment state.
+
+### No shared React Query identity
+
+The environment forms part of the client-side query key.
+
+### No accidental live refund simulation
+
+The refund gateway implementation is selected according to the
+environment.
+
+---
+
+## Environment as Domain State
+
+The architecture treats environment as part of financial identity rather
+than as configuration alone.
+
+A useful conceptual model is:
+
+```text
+Resource Identity
+=
+Resource ID
++
+Merchant
++
+Environment
+```
+
+This is especially important for:
+
+- payment intents
+- subscription plans
+- subscriptions
+- invoices
+- refunds
+- disputes
 
 ---
 
@@ -117,13 +229,12 @@ Benefits include:
 
 ---
 
-# Future Exploration Areas
+## Design Principle
 
-Potential future directions include:
+Test mode should be capable of exercising the same application
+architecture without creating real financial consequences.
 
-- automated environment verification
-- policy-based routing enforcement
-- deployment safety checks
-- infrastructure-level environment guarantees
+Live mode should execute through real external financial rails.
 
-Strong isolation becomes increasingly important as financial systems scale across teams, services, and operational regions.
+The separation therefore exists at multiple layers rather than only in
+the frontend.
